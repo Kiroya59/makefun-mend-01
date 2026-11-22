@@ -83,6 +83,23 @@ function fileIsCrlf(text: string): boolean {
   return lf > 0 && text[lf - 1] === '\r';
 }
 
+/** True when `p` is a directory on disk. A directory is not a file, so the
+ *  tree reads it as absent, but a create or a move to that path still fails
+ *  with `exists`: the path exists (SPEC section 2). */
+function isDirOnDisk(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** True when an edit may not create a file at `p`: a file is there in the
+ *  tree as earlier edits left it, or a directory is there on disk. */
+function createBlocked(tree: FileTree, p: string): boolean {
+  return tree.current(p) !== null || isDirOnDisk(p);
+}
+
 /** The tree as edits leave it: `now` holds changed paths (null = deleted),
  *  everything else is read from disk on demand and cached as original. */
 class FileTree {
@@ -341,7 +358,7 @@ function unifiedEdit(sec: Section, strict: boolean): EditFn {
     const newP = sec.newPath;
     if ((sec.create || oldP === null) && newP !== null) {
       if (!isSafePath(newP)) throw new EditError('unsafe', newP);
-      if (tree.current(newP) !== null) throw new EditError('exists', newP);
+      if (createBlocked(tree, newP)) throw new EditError('exists', newP);
       const plus: string[] = [];
       let lastPlus: { h: number; k: number } | null = null;
       sec.hunks.forEach((h, hi) => {
@@ -371,7 +388,7 @@ function unifiedEdit(sec: Section, strict: boolean): EditFn {
     if (!isSafePath(newP)) throw new EditError('unsafe', newP);
     const before = tree.current(oldP);
     if (before === null) throw new EditError('missing', oldP);
-    if (oldP !== newP && tree.current(newP) !== null) throw new EditError('exists', newP);
+    if (oldP !== newP && createBlocked(tree, newP)) throw new EditError('exists', newP);
     const doc = readDoc(before);
     let drift = 0;
     for (const h of sec.hunks) {
@@ -473,7 +490,7 @@ function srEdit(path: string, oldLines: string[], newLines: string[], strict: bo
   return (tree) => {
     if (!isSafePath(path)) throw new EditError('unsafe', path);
     if (oldLines.length === 0) {
-      if (tree.current(path) !== null) throw new EditError('exists', path);
+      if (createBlocked(tree, path)) throw new EditError('exists', path);
       tree.set(path, newLines.length === 0 ? '' : newLines.join('\n') + '\n');
       return;
     }
@@ -554,7 +571,7 @@ function parseV4a(lines: string[], strict: boolean): EditFn[] {
       }
       edits.push((tree) => {
         if (!isSafePath(path)) throw new EditError('unsafe', path);
-        if (tree.current(path) !== null) throw new EditError('exists', path);
+        if (createBlocked(tree, path)) throw new EditError('exists', path);
         tree.set(path, fileLines.length === 0 ? '' : fileLines.join('\n') + '\n');
       });
     } else if (kind === 'delete') {
@@ -632,7 +649,7 @@ function v4aUpdateEdit(path: string, raw: string[], headLine: number, strict: bo
     if (moveTo !== null && !isSafePath(moveTo)) throw new EditError('unsafe', moveTo);
     const curText = tree.current(path);
     if (curText === null) throw new EditError('missing', path);
-    if (moveTo !== null && tree.current(moveTo) !== null) throw new EditError('exists', moveTo);
+    if (moveTo !== null && createBlocked(tree, moveTo)) throw new EditError('exists', moveTo);
     const doc = readDoc(curText);
     let cursor = 0;
     for (const ch of chunks) {
@@ -703,7 +720,7 @@ function jsonEdit(v: unknown): EditFn | null {
     const text = o.file_text;
     return (tree) => {
       if (!isSafePath(p)) throw new EditError('unsafe', p);
-      if (tree.current(p) !== null) throw new EditError('exists', p);
+      if (createBlocked(tree, p)) throw new EditError('exists', p);
       tree.set(p, text);
     };
   }
